@@ -2,162 +2,171 @@ package main
 
 import (
 	"database/sql"
-	"fmt"
+	"log"
 	"net/http"
-	"time"
+	"regexp"
 
-	"github.com/dgrijalva/jwt-go"
 	"github.com/gin-gonic/gin"
 	_ "github.com/go-sql-driver/mysql"
 	"golang.org/x/crypto/bcrypt"
 )
 
-type User struct {
-	ID       int    `json:"id"`
-	Email    string `json:"email"`
-	Name     string `json:"name"`
-	Password string `json:"password"`
-	Power    int    `json:"power"`
-}
-
-type RegisterInput struct {
-	Email    string `json:"email" binding:"required"`
-	Password string `json:"password" binding:"required"`
-	Name     string `json:"name" binding:"required"`
-	Power    int    `json:"power"`
-}
-
-type TokenClaims struct {
-	Email string `json:"email"`
-	jwt.StandardClaims
-}
-
-func generateToken(email string) (string, error) {
-	expirationTime := time.Now().Add(24 * time.Hour)
-
-	claims := &TokenClaims{
-		Email: email,
-		StandardClaims: jwt.StandardClaims{
-			ExpiresAt: expirationTime.Unix(),
-		},
-	}
-
-	token := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
-
-	tokenString, err := token.SignedString([]byte("your-secret-key"))
-	if err != nil {
-		return "", err
-	}
-	return tokenString, nil
-}
-
 func main() {
 	db, err := sql.Open("mysql", "root:password@tcp(localhost:3306)/go_gpt")
 	if err != nil {
-		panic(err.Error())
+		log.Fatal(err)
 	}
 	defer db.Close()
 
+	err = db.Ping()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	router := gin.Default()
 
-	router.GET("/users", func(ctx *gin.Context) {
-		rows, err := db.Query("SELECT * FROM users")
+	router.POST("/register", Register(db))
+	router.POST("/login", Login(db))
+
+	err = router.Run(":8080")
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+func Register(db *sql.DB) func(c *gin.Context) {
+
+	return func(c *gin.Context) {
+		var user struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		err := c.BindJSON(&user)
 		if err != nil {
-			ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 			return
 		}
 
-		var users []User
-		for rows.Next() {
-			var u User
-			err := rows.Scan(&u.ID, &u.Email, &u.Name, &u.Password, &u.Power)
-			if err != nil {
-				ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			users = append(users, u)
-		}
-
-		ctx.JSON(http.StatusOK, gin.H{"users": users})
-	})
-
-	router.POST("/register", func(ctx *gin.Context) {
-		var input RegisterInput
-
-		if err := ctx.ShouldBindJSON(&input); err != nil {
-			fmt.Println(input)
-			ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		usernamePattern := regexp.MustCompile("^[A-Za-z0-9!@#$%^&*()_+-=,./?;:'\"{[}\\]]{6,}$")
+		if !usernamePattern.MatchString(user.Username) {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid username. Must be at least 6 characters long and contain at least one uppercase letter and one special character (!, @, #, $, &, *)"})
 			return
 		}
 
-		var u User
-		err := db.QueryRow("SELECT * FROM users WHERE email = ?",
-			input.Email).Scan(&u.ID, &u.Email, &u.Name, &u.Password, &u.Power)
-		if err == nil {
-			ctx.JSON(http.StatusConflict, gin.H{"error": "User with this email already exists"})
-			return
+		usernameScore := 0
+		if len(user.Username) >= 6 {
+			usernameScore++
+		}
+		if regexp.MustCompile("[A-Z]").MatchString(user.Username) {
+			usernameScore++
+		}
+		if regexp.MustCompile("[a-z]").MatchString(user.Username) {
+			usernameScore++
+		}
+		if regexp.MustCompile("[0-9]").MatchString(user.Username) {
+			usernameScore++
+		}
+		if regexp.MustCompile(`[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]`).MatchString(user.Username) {
+			usernameScore++
 		}
 
-		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(input.Password), bcrypt.DefaultCost)
+		var count int
+		err = db.QueryRow("SELECT COUNT(*) FROM users WHERE username = ?", user.Username).Scan(&count)
 		if err != nil {
-			ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			log.Println(err)
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+			return
+		}
+		if count > 0 {
+			c.AbortWithStatusJSON(http.StatusConflict, gin.H{"error": "Username already exists"})
+			return
+		}
+		if count == 0 {
+			usernameScore++
+		}
+
+		passwordPattern := regexp.MustCompile("^[A-Za-z0-9!@#$%^&*()_+-=,./?;:'\"{[}\\]]{8,}$")
+		if !passwordPattern.MatchString(user.Password) {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid password. Must be at least 8 characters long and contain at least one uppercase letter, one lowercase letter, one digit, and one special character (@, $, !, %, *, ?, &, or _) "})
 			return
 		}
 
-		result, err := db.Exec("INSERT INTO users (email, password, name, power) VALUES (?, ?, ?, ?)",
-			input.Email, hashedPassword, input.Name, input.Power)
+		passwordScore := 0
+		if len(user.Password) >= 8 {
+			passwordScore++
+		}
+		if regexp.MustCompile("[A-Z]").MatchString(user.Password) {
+			passwordScore++
+		}
+		if regexp.MustCompile("[a-z]").MatchString(user.Password) {
+			passwordScore++
+		}
+		if regexp.MustCompile("[0-9]").MatchString(user.Password) {
+			passwordScore++
+		}
+		if regexp.MustCompile(`[!@#$%^&*()_+\-=[\]{};':"\\|,.<>/?]`).MatchString(user.Password) {
+			passwordScore++
+		}
+
+		if passwordScore < 3 {
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Password is too weak. Must have a minimum of 3 out of 5 characteristics: at least 8 characters, at least one uppercase letter, at least one lowercase letter, at least one digit, and at least one special character"})
+			return
+		}
+
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(user.Password), bcrypt.DefaultCost)
 		if err != nil {
-			ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			log.Println(err)
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
+			return
+		}
+
+		result, err := db.Exec("INSERT INTO users (username, password) VALUES (?, ?)", user.Username, string(hashedPassword))
+		if err != nil {
+			log.Println(err)
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 			return
 		}
 
 		id, err := result.LastInsertId()
 		if err != nil {
-			ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			log.Println(err)
+			c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Internal server error"})
 			return
 		}
 
-		token, err := generateToken(input.Email)
+		c.JSON(http.StatusOK, gin.H{"message": "Register Success", "id": id, "user": user.Username})
+	}
+}
+
+func Login(db *sql.DB) func(c *gin.Context) {
+	return func(c *gin.Context) {
+		var user struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+		err := c.BindJSON(&user)
 		if err != nil {
-			ctx.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			c.AbortWithStatusJSON(http.StatusBadRequest, gin.H{"error": "Invalid request"})
 			return
 		}
 
-		ctx.JSON(http.StatusOK, gin.H{
-			"message": "Registration successful", "id": id, "Email": input.Email, "token": token})
-
-	})
-
-	router.POST("/login", func(ctx *gin.Context) {
-		var credentials struct {
-			Email    string `json:"email" binding:"required"`
-			Password string `json:"password" binding:"required"`
+		var storedUser struct {
+			ID       int    `json:"id"`
+			Username string `json:"username"`
+			Password string `json:"password"`
 		}
-		if err := ctx.ShouldBindJSON(&credentials); err != nil {
-			ctx.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-
-		var u User
-		err := db.QueryRow("SELECT * FROM users WHERE email = ?", credentials.Email).Scan(&u.ID, &u.Email, &u.Name, &u.Password, &u.Power)
+		err = db.QueryRow("SELECT id, username, password FROM users WHERE username=?", user.Username).Scan(&storedUser.ID, &storedUser.Username, &storedUser.Password)
 		if err != nil {
-			ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
+			log.Println(err)
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Incorrect username"})
 			return
 		}
 
-		err = bcrypt.CompareHashAndPassword([]byte(u.Password), []byte(credentials.Password))
-		if err != nil {
-			ctx.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
+		if user.Password != storedUser.Password {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Incorrect password "})
 			return
 		}
 
-		ctx.JSON(http.StatusOK, gin.H{
-			"message": "Login success",
-			"ID":      u.Email})
-	})
-
-	err = router.Run(":8080")
-	if err != nil {
-		panic(err.Error())
+		c.JSON(http.StatusOK, gin.H{"message": "Login Success!", "id": storedUser.ID, "user": storedUser.Username})
 	}
 }
