@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	db, err := sql.Open("mysql", "root:password@tcp(localhost:3306)/go_gpt")
+	db, err := sql.Open("mysql", "your_host:your_password@tcp(localhost:3306)/your_database")
 	if err != nil {
 		log.Fatal(err)
 	}
