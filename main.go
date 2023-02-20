@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	db, err := sql.Open("mysql", "your_host:your_password@tcp(localhost:3306)/your_database")
+	db, err := sql.Open("mysql", "root:password@tcp(localhost:3306)/go_gpt")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -134,7 +134,13 @@ func Register(db *sql.DB) func(c *gin.Context) {
 			return
 		}
 
-		c.JSON(http.StatusOK, gin.H{"message": "Register Success", "id": id, "user": user.Username})
+		c.JSON(http.StatusOK, gin.H{
+			"message":        "Register Success",
+			"id":             id,
+			"user":           user.Username,
+			"password":       user.Password,
+			"Score username": usernameScore,
+			"Score password": passwordScore})
 	}
 }
 
@@ -162,8 +168,8 @@ func Login(db *sql.DB) func(c *gin.Context) {
 			return
 		}
 
-		if user.Password != storedUser.Password {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Incorrect password "})
+		if err := bcrypt.CompareHashAndPassword([]byte(storedUser.Password), []byte(user.Password)); err != nil {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "Incorrect username or password"})
 			return
 		}
 
